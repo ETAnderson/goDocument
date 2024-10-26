@@ -2,102 +2,153 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log"
 	"os"
+	"strings"
 )
 
-// FileParser struct for parsing files
+// FileParser struct
 type FileParser struct {
-	docMap map[string][]FunctionInfo // Holds documentation and function info
+	docMap map[string]FileData // Map to hold file names and their corresponding doc comments and function details
 }
 
-// FunctionInfo holds information about functions
-type FunctionInfo struct {
-	Name       string   `json:"name"`
-	Params     []string `json:"params"`
-	ParamTypes []string `json:"param_types"`
-	ReturnType string   `json:"return_type"`
-	Doc        string   `json:"doc"`
+// FileData represents the structure of the data stored for each file
+type FileData struct {
+	Docs      []string         `json:"docs"`
+	Functions []FunctionDetail `json:"functions"`
+}
+
+// FunctionDetail represents the structure of function details with associated documentation
+type FunctionDetail struct {
+	Name        string   `json:"name"`
+	Docs        []string `json:"docs"` // Documentation comments for the function
+	Params      []string `json:"params"`
+	ParamTypes  []string `json:"param_types"`
+	ReturnTypes []string `json:"return_types"`
 }
 
 // NewFileParser initializes a new FileParser
 func NewFileParser() *FileParser {
-	return &FileParser{
-		docMap: make(map[string][]FunctionInfo),
-	}
+	return &FileParser{docMap: make(map[string]FileData)}
 }
 
-// ParseFile parses the given file for documentation blocks and function signatures
-func (fp *FileParser) ParseFile(filename string) {
-	// Read the file content
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		fmt.Printf("Error reading file %s: %v\n", filename, err)
-		return
-	}
-
-	// Create a new file set and parse the file
+// ParseFile parses the Go file and extracts documentation comments and function details
+func (fp *FileParser) ParseFile(filePath string) {
 	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, filename, data, parser.ParseComments)
+	node, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
 	if err != nil {
-		fmt.Printf("Error parsing file %s: %v\n", filename, err)
+		log.Printf("Error parsing file: %v", err)
 		return
 	}
 
-	// Iterate through the declarations in the file
-	for _, decl := range node.Decls {
-		// Check for general declarations
-		if genDecl, ok := decl.(*ast.GenDecl); ok && genDecl.Doc != nil {
-			// Currently not handling TypeSpec; you can add your logic here if needed.
-		}
+	fileData := FileData{}
 
-		// Check for function declarations
-		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
-			functionInfo := FunctionInfo{
-				Name: funcDecl.Name.Name,
-				Doc:  funcDecl.Doc.Text(),
+	// Iterate through declarations in the file
+	for _, decl := range node.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			// Handle package comments
+			if doc := d.Doc; doc != nil {
+				fileData.Docs = append(fileData.Docs, strings.TrimSpace(doc.Text()))
+			}
+		case *ast.FuncDecl:
+			// Prepare function detail
+			funcDetail := FunctionDetail{
+				Name: d.Name.Name,
+			}
+
+			// Extract documentation comments for the function
+			if d.Doc != nil {
+				funcDetail.Docs = append(funcDetail.Docs, strings.TrimSpace(d.Doc.Text()))
 			}
 
 			// Extract parameters
-			if funcDecl.Type.Params != nil {
-				for _, param := range funcDecl.Type.Params.List {
+			if d.Type.Params != nil {
+				for _, param := range d.Type.Params.List {
+					// Add parameter names
 					for _, name := range param.Names {
-						functionInfo.Params = append(functionInfo.Params, name.Name)
-						functionInfo.ParamTypes = append(functionInfo.ParamTypes, fmt.Sprint(param.Type))
+						funcDetail.Params = append(funcDetail.Params, name.Name)
 					}
+					// Add parameter types
+					funcDetail.ParamTypes = append(funcDetail.ParamTypes, formatType(param.Type))
 				}
 			}
 
 			// Extract return types
-			if funcDecl.Type.Results != nil {
-				for _, result := range funcDecl.Type.Results.List {
-					functionInfo.ReturnType = fmt.Sprint(result.Type)
+			if d.Type.Results != nil {
+				for _, result := range d.Type.Results.List {
+					funcDetail.ReturnTypes = append(funcDetail.ReturnTypes, formatType(result.Type))
 				}
 			}
 
-			fp.docMap[filename] = append(fp.docMap[filename], functionInfo)
+			fileData.Functions = append(fileData.Functions, funcDetail)
 		}
 	}
 
-	// Write the parsed information to JSON file
-	fp.writeJSONToFile("reference.json")
+	// Store the parsed data for the file
+	fp.docMap[filePath] = fileData
+
+	// Write the JSON to the reference.json file
+	if err := fp.writeJSONToFile("reference.json"); err != nil {
+		log.Printf("Error writing JSON to file: %v", err)
+	}
 }
 
-// writeJSONToFile writes the documentation to a JSON file
-func (fp *FileParser) writeJSONToFile(filename string) {
-	jsonOutput, err := json.MarshalIndent(fp.docMap, "", "  ")
+// writeJSONToFile writes the documentation map to a JSON file
+func (fp *FileParser) writeJSONToFile(filename string) error {
+	file, err := os.Create(filename)
 	if err != nil {
-		fmt.Printf("Error converting documentation to JSON: %v\n", err)
-		return
+		return err // Return the error to handle it in ParseFile
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ") // Set indentation for the JSON output
+	if err := encoder.Encode(fp.docMap); err != nil {
+		return err // Return the error to handle it in ParseFile
+	}
+	return nil
+}
+
+// formatType converts an ast.Expr to a string representation
+func formatType(expr ast.Expr) string {
+	if expr == nil {
+		return ""
 	}
 
-	// Write to the file
-	if err := os.WriteFile(filename, jsonOutput, 0644); err != nil {
-		fmt.Printf("Error writing to JSON file: %v\n", err)
-	} else {
-		fmt.Println("Parsed documentation written to", filename)
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.X.(*ast.Ident).Name + "." + t.Sel.Name
+	case *ast.ArrayType:
+		return "[]" + formatType(t.Elt) // handle array type
+	case *ast.MapType:
+		return "map[" + formatType(t.Key) + "]" + formatType(t.Value) // handle map type
+	case *ast.StarExpr:
+		return "*" + formatType(t.X) // handle pointer type
+	case *ast.FuncType:
+		return "func" + formatFuncType(t) // handle function type
+	default:
+		return "<unknown type>" // Provide a fallback for unknown types
 	}
+}
+
+// formatFuncType formats the function type
+func formatFuncType(funcType *ast.FuncType) string {
+	paramTypes := ""
+	if funcType.Params != nil {
+		paramTypes += "("
+		for i, param := range funcType.Params.List {
+			paramTypes += formatType(param.Type)
+			if i < len(funcType.Params.List)-1 {
+				paramTypes += ", "
+			}
+		}
+		paramTypes += ")"
+	}
+	return paramTypes
 }

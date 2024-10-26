@@ -17,13 +17,17 @@ type FileWatcher struct {
 	parser     *FileParser
 	logFile    *os.File
 	recentLogs map[string]struct{} // Store recent log entries to prevent duplicates
-	done       chan struct{}       // Channel to signal completion
 }
 
 // NewFileWatcher initializes a new FileWatcher
 func NewFileWatcher(parser *FileParser) (*FileWatcher, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
+		return nil, err
+	}
+
+	// Create logs directory if it doesn't exist
+	if err := os.MkdirAll("logs", os.ModePerm); err != nil {
 		return nil, err
 	}
 
@@ -41,14 +45,14 @@ func NewFileWatcher(parser *FileParser) (*FileWatcher, error) {
 		parser:     parser,
 		logFile:    logFile,
 		recentLogs: make(map[string]struct{}), // Initialize the map
-		done:       make(chan struct{}),       // Initialize the done channel
 	}, nil
 }
 
 // Watch starts watching the specified directory
 func (fw *FileWatcher) Watch(dir string) {
 	// Add the directory to be watched
-	if err := fw.watcher.Add(dir); err != nil {
+	err := fw.watcher.Add(dir)
+	if err != nil {
 		log.Fatalf("Failed to watch directory: %s", err)
 	}
 
@@ -67,25 +71,29 @@ func (fw *FileWatcher) Watch(dir string) {
 				if event.Op&fsnotify.Remove == fsnotify.Remove {
 					continue
 				}
-				fw.debounceParsing(event)
 
+				// Log the event
+				fw.logEvent(event)
+
+				// Parse the changed file
+				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
+					fw.parser.ParseFile(event.Name)
+				}
 			case err, ok := <-fw.watcher.Errors:
 				if !ok {
 					return
 				}
-				fmt.Printf("Error: %s\n", err)
-
+				log.Printf("Error: %s\n", err)
 			case <-signalChan:
 				fmt.Println("\nReceived interrupt signal, shutting down...")
-				fw.Close()
 				return
 			}
 		}
 	}()
 }
 
-// debounceParsing implements debouncing for file parsing
-func (fw *FileWatcher) debounceParsing(event fsnotify.Event) {
+// logEvent logs the file change event to the log file
+func (fw *FileWatcher) logEvent(event fsnotify.Event) {
 	logKey := fmt.Sprintf("%s:%s", event.Name, event.Op)
 
 	// Check for duplicates
@@ -94,30 +102,25 @@ func (fw *FileWatcher) debounceParsing(event fsnotify.Event) {
 	}
 	fw.recentLogs[logKey] = struct{}{} // Mark this log entry as seen
 
-	// Wait for a short period before parsing to prevent rapid triggers
-	time.AfterFunc(100*time.Millisecond, func() {
-		fw.parser.ParseFile(event.Name)
-		fw.logEvent(event)
-	})
-}
-
-// logEvent logs the file change event to the log file
-func (fw *FileWatcher) logEvent(event fsnotify.Event) {
 	timestamp := time.Now().Format("15:04:05") // Format: HH:MM:SS
 	logEntry := fmt.Sprintf("%s, %s, %s\n", event.Name, event.Op, timestamp)
 	if _, err := fw.logFile.WriteString(logEntry); err != nil {
-		fmt.Printf("Error writing to log file: %s\n", err)
+		log.Printf("Error writing to log file: %s\n", err)
 	}
+}
+
+// Wait blocks until the watcher is closed
+func (fw *FileWatcher) Wait() {
+	// Wait for a signal to close the watcher
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+
+	<-signalChan // Block until we receive a signal
+	fw.Close()   // Close the file watcher and log file
 }
 
 // Close closes the file watcher and log file
 func (fw *FileWatcher) Close() {
 	fw.watcher.Close()
 	fw.logFile.Close()
-	close(fw.done)
-}
-
-// Wait blocks until the file watcher is done
-func (fw *FileWatcher) Wait() {
-	<-fw.done
 }
