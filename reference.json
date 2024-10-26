@@ -1,5 +1,0 @@
-{
-  "Add returns the sum of two numbers.\n": "../goDocumentTest/godoctest.go:10",
-  "Example function demonstrating a simple operation.\n": "../goDocumentTest/godoctest.go:15",
-  "Pi is the ratio of the circumference of a circle to its diameter.\n": "../goDocumentTest/godoctest.go:7"
-}
