@@ -1,0 +1,1 @@
+../goDocumentTest/godoctest.go, WRITE, 15:52:18
