@@ -11,18 +11,20 @@ import (
 
 // FileParser struct for parsing files
 type FileParser struct {
-	// You can define any fields if necessary
+	docMap map[string]string
 }
 
 // NewFileParser initializes a new FileParser
 func NewFileParser() *FileParser {
-	return &FileParser{}
+	return &FileParser{
+		docMap: make(map[string]string),
+	}
 }
 
 // ParseFile parses the given file for documentation blocks
 func (fp *FileParser) ParseFile(filename string) {
 	// Read the file content
-	data, err := os.ReadFile(filename) // Updated to use os.ReadFile
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Printf("Error reading file %s: %v\n", filename, err)
 		return
@@ -36,37 +38,52 @@ func (fp *FileParser) ParseFile(filename string) {
 		return
 	}
 
-	// Create a map to hold documentation blocks
-	docMap := make(map[string]string)
+	// Clear the previous docMap for each new file
+	fp.docMap = make(map[string]string)
 
 	// Iterate through the declarations in the file
 	for _, decl := range node.Decls {
-		// Use type assertion to check if decl is of type *ast.GenDecl
+		// Check for comments associated with the declaration
 		if genDecl, ok := decl.(*ast.GenDecl); ok {
-			// Check for comments associated with the declaration
 			if genDecl.Doc != nil {
 				position := fset.Position(genDecl.Pos())
-				docMap[genDecl.Doc.Text()] = fmt.Sprintf("%s:%d", position.Filename, position.Line) // Store the documentation and position
+				fp.docMap[genDecl.Doc.Text()] = fmt.Sprintf("%s:%d", position.Filename, position.Line) // Store the documentation and position
 			}
 		}
 
-		// Use type assertion to check if decl is of type *ast.FuncDecl
 		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
-			// Check for comments associated with the function declaration
 			if funcDecl.Doc != nil {
 				position := fset.Position(funcDecl.Pos())
-				docMap[funcDecl.Doc.Text()] = fmt.Sprintf("%s:%d", position.Filename, position.Line) // Store the documentation and position
+				fp.docMap[funcDecl.Doc.Text()] = fmt.Sprintf("%s:%d", position.Filename, position.Line) // Store the documentation and position
 			}
 		}
 	}
 
-	// Convert the map to JSON
-	jsonOutput, err := json.MarshalIndent(docMap, "", "  ")
+	// Write to JSON file
+	fp.writeJSONToFile("reference.json")
+}
+
+// writeJSONToFile writes the docMap to a JSON file
+func (fp *FileParser) writeJSONToFile(filename string) {
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		fmt.Printf("Error opening file %s: %v\n", filename, err)
+		return
+	}
+	defer file.Close()
+
+	// Marshal docMap to JSON
+	jsonOutput, err := json.MarshalIndent(fp.docMap, "", "  ")
 	if err != nil {
 		fmt.Printf("Error converting documentation to JSON: %v\n", err)
 		return
 	}
 
-	// Print the JSON output
-	fmt.Printf("Parsed Documentation for %s:\n%s\n", filename, jsonOutput)
+	// Write JSON to file
+	if _, err := file.Write(jsonOutput); err != nil {
+		fmt.Printf("Error writing to JSON file %s: %v\n", filename, err)
+		return
+	}
+
+	fmt.Printf("Parsed documentation written to %s\n", filename)
 }

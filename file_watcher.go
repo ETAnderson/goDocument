@@ -17,7 +17,7 @@ type FileWatcher struct {
 	parser     *FileParser
 	logFile    *os.File
 	recentLogs map[string]struct{} // Store recent log entries to prevent duplicates
-	done       chan struct{}       // Channel to signal shutdown
+	done       chan struct{}       // Channel to signal completion
 }
 
 // NewFileWatcher initializes a new FileWatcher
@@ -48,8 +48,7 @@ func NewFileWatcher(parser *FileParser) (*FileWatcher, error) {
 // Watch starts watching the specified directory
 func (fw *FileWatcher) Watch(dir string) {
 	// Add the directory to be watched
-	err := fw.watcher.Add(dir)
-	if err != nil {
+	if err := fw.watcher.Add(dir); err != nil {
 		log.Fatalf("Failed to watch directory: %s", err)
 	}
 
@@ -68,31 +67,25 @@ func (fw *FileWatcher) Watch(dir string) {
 				if event.Op&fsnotify.Remove == fsnotify.Remove {
 					continue
 				}
+				fw.debounceParsing(event)
 
-				// Log the event
-				fw.logEvent(event)
-
-				// Parse the changed file
-				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
-					fw.parser.ParseFile(event.Name)
-				}
 			case err, ok := <-fw.watcher.Errors:
 				if !ok {
 					return
 				}
 				fmt.Printf("Error: %s\n", err)
+
 			case <-signalChan:
 				fmt.Println("\nReceived interrupt signal, shutting down...")
-				close(fw.done) // Signal shutdown
+				fw.Close()
 				return
 			}
 		}
 	}()
 }
 
-// logEvent logs the file change event to the log file
-func (fw *FileWatcher) logEvent(event fsnotify.Event) {
-	// Create a unique log key
+// debounceParsing implements debouncing for file parsing
+func (fw *FileWatcher) debounceParsing(event fsnotify.Event) {
 	logKey := fmt.Sprintf("%s:%s", event.Name, event.Op)
 
 	// Check for duplicates
@@ -101,6 +94,15 @@ func (fw *FileWatcher) logEvent(event fsnotify.Event) {
 	}
 	fw.recentLogs[logKey] = struct{}{} // Mark this log entry as seen
 
+	// Wait for a short period before parsing to prevent rapid triggers
+	time.AfterFunc(100*time.Millisecond, func() {
+		fw.parser.ParseFile(event.Name)
+		fw.logEvent(event)
+	})
+}
+
+// logEvent logs the file change event to the log file
+func (fw *FileWatcher) logEvent(event fsnotify.Event) {
 	timestamp := time.Now().Format("15:04:05") // Format: HH:MM:SS
 	logEntry := fmt.Sprintf("%s, %s, %s\n", event.Name, event.Op, timestamp)
 	if _, err := fw.logFile.WriteString(logEntry); err != nil {
@@ -112,10 +114,10 @@ func (fw *FileWatcher) logEvent(event fsnotify.Event) {
 func (fw *FileWatcher) Close() {
 	fw.watcher.Close()
 	fw.logFile.Close()
+	close(fw.done)
 }
 
-// Graceful shutdown
+// Wait blocks until the file watcher is done
 func (fw *FileWatcher) Wait() {
-	<-fw.done  // Wait for the shutdown signal
-	fw.Close() // Close resources
+	<-fw.done
 }
