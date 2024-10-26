@@ -6,7 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/ioutil"
+	"os"
 )
 
 // FileParser struct for parsing files
@@ -22,7 +22,7 @@ func NewFileParser() *FileParser {
 // ParseFile parses the given file for documentation blocks
 func (fp *FileParser) ParseFile(filename string) {
 	// Read the file content
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename) // Updated to use os.ReadFile
 	if err != nil {
 		fmt.Printf("Error reading file %s: %v\n", filename, err)
 		return
