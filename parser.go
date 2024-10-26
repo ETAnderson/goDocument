@@ -11,27 +11,37 @@ import (
 
 // FileParser struct for parsing files
 type FileParser struct {
-	docMap map[string][]DocEntry // Store documentation entries for each file
+	docMap map[string][]FunctionInfo // Holds documentation and function info
 }
 
-// DocEntry holds a comment and its location
-type DocEntry struct {
-	Comment  string `json:"comment"`
-	Location string `json:"location"`
+// FunctionInfo holds information about functions
+type FunctionInfo struct {
+	Name       string   `json:"name"`
+	Params     []string `json:"params"`
+	ParamTypes []string `json:"param_types"`
+	ReturnType string   `json:"return_type"`
+	Doc        string   `json:"doc"`
 }
 
 // NewFileParser initializes a new FileParser
 func NewFileParser() *FileParser {
 	return &FileParser{
-		docMap: make(map[string][]DocEntry),
+		docMap: make(map[string][]FunctionInfo),
 	}
 }
 
-// ParseFile parses the given file for documentation blocks
+// ParseFile parses the given file for documentation blocks and function signatures
 func (fp *FileParser) ParseFile(filename string) {
+	// Read the file content
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		fmt.Printf("Error reading file %s: %v\n", filename, err)
+		return
+	}
+
 	// Create a new file set and parse the file
 	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, filename, nil, parser.ParseComments)
+	node, err := parser.ParseFile(fset, filename, data, parser.ParseComments)
 	if err != nil {
 		fmt.Printf("Error parsing file %s: %v\n", filename, err)
 		return
@@ -39,49 +49,55 @@ func (fp *FileParser) ParseFile(filename string) {
 
 	// Iterate through the declarations in the file
 	for _, decl := range node.Decls {
-		var entry DocEntry
-		// Use type assertion to check if decl is of type *ast.GenDecl
+		// Check for general declarations
 		if genDecl, ok := decl.(*ast.GenDecl); ok && genDecl.Doc != nil {
-			position := fset.Position(genDecl.Pos())
-			entry = DocEntry{
-				Comment:  genDecl.Doc.Text(),
-				Location: fmt.Sprintf("%s:%d", position.Filename, position.Line),
-			}
-			fp.docMap[filename] = append(fp.docMap[filename], entry)
+			// Currently not handling TypeSpec; you can add your logic here if needed.
 		}
 
-		// Use type assertion to check if decl is of type *ast.FuncDecl
-		if funcDecl, ok := decl.(*ast.FuncDecl); ok && funcDecl.Doc != nil {
-			position := fset.Position(funcDecl.Pos())
-			entry = DocEntry{
-				Comment:  funcDecl.Doc.Text(),
-				Location: fmt.Sprintf("%s:%d", position.Filename, position.Line),
+		// Check for function declarations
+		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
+			functionInfo := FunctionInfo{
+				Name: funcDecl.Name.Name,
+				Doc:  funcDecl.Doc.Text(),
 			}
-			fp.docMap[filename] = append(fp.docMap[filename], entry)
+
+			// Extract parameters
+			if funcDecl.Type.Params != nil {
+				for _, param := range funcDecl.Type.Params.List {
+					for _, name := range param.Names {
+						functionInfo.Params = append(functionInfo.Params, name.Name)
+						functionInfo.ParamTypes = append(functionInfo.ParamTypes, fmt.Sprint(param.Type))
+					}
+				}
+			}
+
+			// Extract return types
+			if funcDecl.Type.Results != nil {
+				for _, result := range funcDecl.Type.Results.List {
+					functionInfo.ReturnType = fmt.Sprint(result.Type)
+				}
+			}
+
+			fp.docMap[filename] = append(fp.docMap[filename], functionInfo)
 		}
 	}
 
-	// Write the docMap to reference.json
-	if err := fp.writeJSONToFile("reference.json"); err != nil {
-		fmt.Printf("Error writing reference.json: %v\n", err)
-	}
+	// Write the parsed information to JSON file
+	fp.writeJSONToFile("reference.json")
 }
 
-// writeJSONToFile writes the docMap to a JSON file
-func (fp *FileParser) writeJSONToFile(filename string) error {
-	file, err := os.Create(filename) // Overwrite the file if it exists
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	// Convert the docMap to JSON
+// writeJSONToFile writes the documentation to a JSON file
+func (fp *FileParser) writeJSONToFile(filename string) {
 	jsonOutput, err := json.MarshalIndent(fp.docMap, "", "  ")
 	if err != nil {
-		return err
+		fmt.Printf("Error converting documentation to JSON: %v\n", err)
+		return
 	}
 
-	// Write the JSON output to the file
-	_, err = file.Write(jsonOutput)
-	return err
+	// Write to the file
+	if err := os.WriteFile(filename, jsonOutput, 0644); err != nil {
+		fmt.Printf("Error writing to JSON file: %v\n", err)
+	} else {
+		fmt.Println("Parsed documentation written to", filename)
+	}
 }
