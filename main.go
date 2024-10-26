@@ -25,6 +25,8 @@ func main() {
 	// Start watching the specified directory
 	fileWatcher.Watch(dir)
 
-	// Block forever to keep the program running
-	select {}
+	// Wait for shutdown signal
+	fileWatcher.Wait()
+
+	log.Println("File watcher stopped.")
 }

@@ -17,6 +17,7 @@ type FileWatcher struct {
 	parser     *FileParser
 	logFile    *os.File
 	recentLogs map[string]struct{} // Store recent log entries to prevent duplicates
+	done       chan struct{}       // Channel to signal shutdown
 }
 
 // NewFileWatcher initializes a new FileWatcher
@@ -40,6 +41,7 @@ func NewFileWatcher(parser *FileParser) (*FileWatcher, error) {
 		parser:     parser,
 		logFile:    logFile,
 		recentLogs: make(map[string]struct{}), // Initialize the map
+		done:       make(chan struct{}),       // Initialize the done channel
 	}, nil
 }
 
@@ -81,6 +83,7 @@ func (fw *FileWatcher) Watch(dir string) {
 				fmt.Printf("Error: %s\n", err)
 			case <-signalChan:
 				fmt.Println("\nReceived interrupt signal, shutting down...")
+				close(fw.done) // Signal shutdown
 				return
 			}
 		}
@@ -109,4 +112,10 @@ func (fw *FileWatcher) logEvent(event fsnotify.Event) {
 func (fw *FileWatcher) Close() {
 	fw.watcher.Close()
 	fw.logFile.Close()
+}
+
+// Graceful shutdown
+func (fw *FileWatcher) Wait() {
+	<-fw.done  // Wait for the shutdown signal
+	fw.Close() // Close resources
 }
