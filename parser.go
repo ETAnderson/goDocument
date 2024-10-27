@@ -175,7 +175,21 @@ func formatType(expr ast.Expr) string {
 		return "*" + formatType(t.X) // handle pointer type
 	case *ast.FuncType:
 		return "func" + formatFuncType(t) // handle function type
+	case *ast.ChanType:
+		return "chan " + formatType(t.Value) // handle channel type
+	case *ast.InterfaceType:
+		return "interface{}" // handle empty interfaces
 	default:
+		// Check for specific string representations for complex types
+		if strType, ok := expr.(*ast.Ident); ok && strType.Name == "interface" {
+			return "interface{}"
+		}
+		if strType, ok := expr.(*ast.MapType); ok {
+			return "map[" + formatType(strType.Key) + "]" + formatType(strType.Value) // re-ensure handling of map type
+		}
+		if strType, ok := expr.(*ast.ArrayType); ok {
+			return "[]" + formatType(strType.Elt) // re-ensure handling of array type
+		}
 		return "<unknown type>" // Provide a fallback for unknown types
 	}
 }
