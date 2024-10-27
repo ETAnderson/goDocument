@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -72,7 +73,7 @@ func (fp *FileParser) tryParseFile(filePath string, retryCount int) error {
 // fileExistsAndReadable checks if the file exists and is non-empty
 func (fp *FileParser) fileExistsAndReadable(filePath string) bool {
 	info, err := os.Stat(filePath)
-	if err != nil || info.Size() == 0 {
+	if err != nil || info.IsDir() || info.Size() == 0 {
 		return false
 	}
 	return true
@@ -128,25 +129,39 @@ func (fp *FileParser) extractFileData(filePath string, node *ast.File) {
 	// Store the parsed data for the file
 	fp.docMap[filePath] = fileData
 
-	// Write the JSON to the reference.json file
-	if err := fp.writeJSONToFile("reference.json"); err != nil {
+	// Write the JSON to the corresponding file
+	if err := fp.writeJSONToFile(filePath); err != nil {
 		log.Printf("Error writing JSON to file: %v", err)
 	}
 }
 
-// writeJSONToFile writes the documentation map to a JSON file with pretty formatting
-func (fp *FileParser) writeJSONToFile(filename string) error {
-	file, err := os.Create(filename)
+// writeJSONToFile writes the documentation map to a JSON file in the references directory
+func (fp *FileParser) writeJSONToFile(goFilePath string) error {
+	// Get the directory path of the Go file
+	dir, fileName := filepath.Split(goFilePath)
+	baseName := fileName[:len(fileName)-len(filepath.Ext(fileName))] + ".json"
+
+	// Construct the path for the JSON file in the references folder
+	referenceDir := filepath.Join("references", dir)
+	referenceFilePath := filepath.Join(referenceDir, baseName)
+
+	// Create the references directory if it doesn't exist
+	if err := os.MkdirAll(referenceDir, os.ModePerm); err != nil {
+		return err
+	}
+
+	// Write the JSON data to the corresponding JSON file
+	file, err := os.Create(referenceFilePath)
 	if err != nil {
-		return err // Return the error to handle it in ParseFile
+		return err
 	}
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ") // Set indentation for better readability
 
-	if err := encoder.Encode(fp.docMap); err != nil {
-		return err // Return the error to handle it in ParseFile
+	if err := encoder.Encode(fp.docMap[goFilePath]); err != nil {
+		return err
 	}
 	return nil
 }
