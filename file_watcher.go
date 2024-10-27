@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,7 +17,8 @@ type FileWatcher struct {
 	watcher    *fsnotify.Watcher
 	parser     *FileParser
 	logFile    *os.File
-	recentLogs map[string]struct{} // Store recent log entries to prevent duplicates
+	recentLogs []string   // Store recent log entries
+	mu         sync.Mutex // Mutex for thread-safe access to recentLogs
 }
 
 // NewFileWatcher initializes a new FileWatcher
@@ -35,7 +37,7 @@ func NewFileWatcher(parser *FileParser) (*FileWatcher, error) {
 	timestamp := time.Now().Format("2006-01-02") // Format: YYYY-MM-DD
 	logFileName := fmt.Sprintf("logs/file_watcher_logs_%s.txt", timestamp)
 
-	logFile, err := os.OpenFile(logFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +46,7 @@ func NewFileWatcher(parser *FileParser) (*FileWatcher, error) {
 		watcher:    watcher,
 		parser:     parser,
 		logFile:    logFile,
-		recentLogs: make(map[string]struct{}), // Initialize the map
+		recentLogs: []string{}, // Initialize the array for recent logs
 	}, nil
 }
 
@@ -86,6 +88,7 @@ func (fw *FileWatcher) Watch(dir string) {
 				log.Printf("Error: %s\n", err)
 			case <-signalChan:
 				fmt.Println("\nReceived interrupt signal, shutting down...")
+				fw.Close() // Close resources before exit
 				return
 			}
 		}
@@ -94,19 +97,26 @@ func (fw *FileWatcher) Watch(dir string) {
 
 // logEvent logs the file change event to the log file
 func (fw *FileWatcher) logEvent(event fsnotify.Event) {
-	logKey := fmt.Sprintf("%s:%s", event.Name, event.Op)
+	fw.mu.Lock()
+	defer fw.mu.Unlock() // Ensure to unlock the mutex after logging
 
-	// Check for duplicates
-	if _, exists := fw.recentLogs[logKey]; exists {
-		return // Skip logging if it's a duplicate
+	timestamp := time.Now().Format("15:04:05")                             // Format: HH:MM:SS
+	logEntry := fmt.Sprintf("%s, %s, %s", timestamp, event.Name, event.Op) // Log format: HH:MM:SS, filename, operation
+
+	// Check if the last logged entry is the same as the current log entry
+	if len(fw.recentLogs) > 0 && fw.recentLogs[len(fw.recentLogs)-1] == logEntry {
+		fw.recentLogs = []string{} // Clear recent logs if the current entry is a duplicate
+		return                     // Skip logging if it's a duplicate of the last entry
 	}
-	fw.recentLogs[logKey] = struct{}{} // Mark this log entry as seen
 
-	timestamp := time.Now().Format("15:04:05") // Format: HH:MM:SS
-	logEntry := fmt.Sprintf("%s, %s, %s\n", event.Name, event.Op, timestamp)
-	if _, err := fw.logFile.WriteString(logEntry); err != nil {
+	// Write log entry to the file
+	if _, err := fw.logFile.WriteString(logEntry + "\n"); err != nil {
 		log.Printf("Error writing to log file: %s\n", err)
+		return
 	}
+
+	// Append the log entry to recent logs
+	fw.recentLogs = append(fw.recentLogs, logEntry)
 }
 
 // Wait blocks until the watcher is closed

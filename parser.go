@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 // FileParser struct
@@ -38,13 +39,47 @@ func NewFileParser() *FileParser {
 
 // ParseFile parses the Go file and extracts documentation comments and function details
 func (fp *FileParser) ParseFile(filePath string) {
-	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
+	// Ensure we reset the file entry in docMap to guarantee a fresh parse
+	delete(fp.docMap, filePath)
+
+	// Attempt parsing with retries for stability
+	err := fp.tryParseFile(filePath, 3)
 	if err != nil {
 		log.Printf("Error parsing file: %v", err)
-		return
 	}
+}
 
+// tryParseFile attempts to parse the file up to retryCount times to ensure stability
+func (fp *FileParser) tryParseFile(filePath string, retryCount int) error {
+	var lastErr error
+	for i := 0; i < retryCount; i++ {
+		// Ensure the file pointer is at the beginning by creating a new FileSet
+		fset := token.NewFileSet()
+
+		if fp.fileExistsAndReadable(filePath) {
+			node, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
+			if err == nil {
+				fp.extractFileData(filePath, node) // Extract data if parsing succeeds
+				return nil
+			}
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond) // Wait briefly before retrying
+	}
+	return lastErr // Return the last error after retries
+}
+
+// fileExistsAndReadable checks if the file exists and is non-empty
+func (fp *FileParser) fileExistsAndReadable(filePath string) bool {
+	info, err := os.Stat(filePath)
+	if err != nil || info.Size() == 0 {
+		return false
+	}
+	return true
+}
+
+// extractFileData processes the parsed node and stores it in docMap
+func (fp *FileParser) extractFileData(filePath string, node *ast.File) {
 	fileData := FileData{
 		Package: node.Name.Name, // Get the declared package name
 	}
@@ -60,7 +95,6 @@ func (fp *FileParser) ParseFile(filePath string) {
 	for _, decl := range node.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			// Handle function declarations
 			funcDetail := FunctionDetail{
 				Name: d.Name.Name,
 			}
@@ -73,11 +107,9 @@ func (fp *FileParser) ParseFile(filePath string) {
 			// Extract parameters
 			if d.Type != nil && d.Type.Params != nil {
 				for _, param := range d.Type.Params.List {
-					// Add parameter names
 					for _, name := range param.Names {
 						funcDetail.Params = append(funcDetail.Params, name.Name)
 					}
-					// Add parameter types
 					funcDetail.ParamTypes = append(funcDetail.ParamTypes, formatType(param.Type))
 				}
 			}
