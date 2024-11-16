@@ -1,29 +1,64 @@
 package main
 
 import (
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// buildFileStructure creates a corresponding directory structure in the "references" folder
-func buildFileStructure(watchedDir string) error {
-	// Define the references directory
-	referenceDir := "references"
+// BuildFileStructure replicates srcDir's structure inside the "references" directory
+// and generates JSON files for .go files found.
+func BuildFileStructure(srcDir string) error {
+	referencesDir := "references"
 
-	// Walk through the watched directory
-	return filepath.Walk(watchedDir, func(path string, info os.FileInfo, err error) error {
+	// Walk through the source directory
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			log.Printf("Error accessing path %q: %v\n", path, err)
+			return err
+		}
+
+		// Skip the references directory and its subdirectories
+		if strings.HasPrefix(path, referencesDir) {
+			return nil
+		}
+
+		// Calculate the relative path from srcDir
+		relativePath, err := filepath.Rel(srcDir, path)
 		if err != nil {
 			return err
 		}
 
-		// Construct the corresponding path in the references directory
-		relPath, _ := filepath.Rel(watchedDir, path)
-		destPath := filepath.Join(referenceDir, relPath)
+		// Skip processing the root directory itself
+		if relativePath == "." {
+			return nil
+		}
+
+		// Construct the target path under references/
+		targetPath := filepath.Join(referencesDir, relativePath)
 
 		if info.IsDir() {
-			// Create the directory in the references structure
-			return os.MkdirAll(destPath, os.ModePerm)
+			// Ensure directories are replicated in references
+			if err := os.MkdirAll(targetPath, os.ModePerm); err != nil {
+				log.Printf("Error creating directory %q: %v\n", targetPath, err)
+				return err
+			}
+		} else if filepath.Ext(path) == ".go" {
+			// Process only .go files
+			parser := NewFileParser()
+			parser.ParseFile(path)
+
+			// Convert targetPath from .go to .json
+			jsonFilePath := targetPath[:len(targetPath)-len(filepath.Ext(targetPath))] + ".json"
+
+			// Write JSON strictly to the references directory
+			if err := parser.writeJSONToFile(filepath.Join(referencesDir, jsonFilePath)); err != nil {
+				log.Printf("Error writing JSON to file: %v\n", err)
+				return err
+			}
 		}
-		return nil // Return nil for files; we only need to create directories
+
+		return nil
 	})
 }

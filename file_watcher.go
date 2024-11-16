@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -50,20 +51,70 @@ func NewFileWatcher(parser *FileParser) (*FileWatcher, error) {
 	}, nil
 }
 
-// Watch starts watching the specified directory
+// Watch starts watching the specified directory and its subdirectories
 func (fw *FileWatcher) Watch(dir string) {
-	// Build the file structure in the references directory
-	if err := buildFileStructure(dir); err != nil {
-		log.Fatalf("Error building file structure: %v", err)
-	}
-
 	// Add the directory to be watched
-	err := fw.watcher.Add(dir)
-	if err != nil {
+	if err := fw.watcher.Add(dir); err != nil {
 		log.Fatalf("Failed to watch directory: %s", err)
 	}
 
-	// Rest of the existing Watch method...
+	// Watch all subdirectories recursively
+	fw.watchSubdirectories(dir)
+
+	// Handle signals for graceful shutdown
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		for {
+			select {
+			case event, ok := <-fw.watcher.Events:
+				if !ok {
+					return
+				}
+				// Ignore remove events
+				if event.Op&fsnotify.Remove == fsnotify.Remove {
+					continue
+				}
+
+				// Log the event
+				fw.logEvent(event)
+
+				// Parse the changed file
+				if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
+					fw.parser.ParseFile(event.Name)
+				}
+			case err, ok := <-fw.watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Printf("Error: %s\n", err)
+			case <-signalChan:
+				fmt.Println("\nReceived interrupt signal, shutting down...")
+				fw.Close() // Close resources before exit
+				return
+			}
+		}
+	}()
+}
+
+// watchSubdirectories recursively watches all subdirectories
+func (fw *FileWatcher) watchSubdirectories(dir string) {
+	// Use Walk to add all subdirectories to the watcher
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if err := fw.watcher.Add(path); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("Error watching subdirectories: %v", err)
+	}
 }
 
 // logEvent logs the file change event to the log file

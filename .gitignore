@@ -1,5 +1,5 @@
-# Ignore reference.json
-reference.json
+# Ignore references folder
+references/
 
 # Ignore logs folder
 logs/

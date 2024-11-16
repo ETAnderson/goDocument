@@ -16,6 +16,11 @@ func main() {
 	// Create a new FileParser
 	parser := NewFileParser()
 
+	// Build the initial directory structure for references
+	if err := BuildFileStructure(dir); err != nil {
+		log.Fatalf("Error creating directory structure: %v", err)
+	}
+
 	// Create a new FileWatcher
 	fileWatcher, err := NewFileWatcher(parser)
 	if err != nil {

@@ -40,10 +40,7 @@ func NewFileParser() *FileParser {
 
 // ParseFile parses the Go file and extracts documentation comments and function details
 func (fp *FileParser) ParseFile(filePath string) {
-	// Ensure we reset the file entry in docMap to guarantee a fresh parse
-	delete(fp.docMap, filePath)
-
-	// Attempt parsing with retries for stability
+	delete(fp.docMap, filePath) // Reset for fresh parse
 	err := fp.tryParseFile(filePath, 3)
 	if err != nil {
 		log.Printf("Error parsing file: %v", err)
@@ -54,58 +51,46 @@ func (fp *FileParser) ParseFile(filePath string) {
 func (fp *FileParser) tryParseFile(filePath string, retryCount int) error {
 	var lastErr error
 	for i := 0; i < retryCount; i++ {
-		// Ensure the file pointer is at the beginning by creating a new FileSet
 		fset := token.NewFileSet()
-
 		if fp.fileExistsAndReadable(filePath) {
 			node, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments)
 			if err == nil {
-				fp.extractFileData(filePath, node) // Extract data if parsing succeeds
+				fp.extractFileData(filePath, node)
 				return nil
 			}
 			lastErr = err
 		}
-		time.Sleep(50 * time.Millisecond) // Wait briefly before retrying
+		time.Sleep(50 * time.Millisecond)
 	}
-	return lastErr // Return the last error after retries
+	return lastErr
 }
 
 // fileExistsAndReadable checks if the file exists and is non-empty
 func (fp *FileParser) fileExistsAndReadable(filePath string) bool {
 	info, err := os.Stat(filePath)
-	if err != nil || info.IsDir() || info.Size() == 0 {
-		return false
-	}
-	return true
+	return err == nil && !info.IsDir() && info.Size() > 0
 }
 
 // extractFileData processes the parsed node and stores it in docMap
 func (fp *FileParser) extractFileData(filePath string, node *ast.File) {
 	fileData := FileData{
-		Package: node.Name.Name, // Get the declared package name
+		Package: node.Name.Name,
 	}
 
-	// Extract imported packages
 	for _, imp := range node.Imports {
 		if imp.Path != nil {
-			fileData.Imports = append(fileData.Imports, strings.Trim(imp.Path.Value, `"`)) // Remove quotes safely
+			fileData.Imports = append(fileData.Imports, strings.Trim(imp.Path.Value, `"`))
 		}
 	}
 
-	// Iterate through declarations in the file
 	for _, decl := range node.Decls {
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			funcDetail := FunctionDetail{
-				Name: d.Name.Name,
-			}
-
-			// Extract documentation comments for the function
+			funcDetail := FunctionDetail{Name: d.Name.Name}
 			if d.Doc != nil {
 				funcDetail.Docs = sanitizeDoc(d.Doc.Text())
 			}
 
-			// Extract parameters
 			if d.Type != nil && d.Type.Params != nil {
 				for _, param := range d.Type.Params.List {
 					for _, name := range param.Names {
@@ -115,55 +100,40 @@ func (fp *FileParser) extractFileData(filePath string, node *ast.File) {
 				}
 			}
 
-			// Extract return types
 			if d.Type != nil && d.Type.Results != nil {
 				for _, result := range d.Type.Results.List {
 					funcDetail.ReturnTypes = append(funcDetail.ReturnTypes, formatType(result.Type))
 				}
 			}
-
 			fileData.Functions = append(fileData.Functions, funcDetail)
 		}
 	}
 
-	// Store the parsed data for the file
 	fp.docMap[filePath] = fileData
 
-	// Write the JSON to the corresponding file
 	if err := fp.writeJSONToFile(filePath); err != nil {
 		log.Printf("Error writing JSON to file: %v", err)
 	}
 }
 
 // writeJSONToFile writes the documentation map to a JSON file in the references directory
-func (fp *FileParser) writeJSONToFile(goFilePath string) error {
-	// Get the directory path of the Go file
-	dir, fileName := filepath.Split(goFilePath)
-	baseName := fileName[:len(fileName)-len(filepath.Ext(fileName))] + ".json"
-
-	// Construct the path for the JSON file in the references folder
-	referenceDir := filepath.Join("references", dir)
-	referenceFilePath := filepath.Join(referenceDir, baseName)
-
+func (fp *FileParser) writeJSONToFile(jsonFilePath string) error {
 	// Create the references directory if it doesn't exist
-	if err := os.MkdirAll(referenceDir, os.ModePerm); err != nil {
+	dir := filepath.Dir(jsonFilePath)
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return err
 	}
 
-	// Write the JSON data to the corresponding JSON file
-	file, err := os.Create(referenceFilePath)
+	// Create the JSON file
+	file, err := os.Create(jsonFilePath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ") // Set indentation for better readability
-
-	if err := encoder.Encode(fp.docMap[goFilePath]); err != nil {
-		return err
-	}
-	return nil
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(fp.docMap[jsonFilePath])
 }
 
 // sanitizeDoc removes newlines and trims spaces from documentation strings
@@ -183,29 +153,28 @@ func formatType(expr ast.Expr) string {
 	case *ast.SelectorExpr:
 		return t.X.(*ast.Ident).Name + "." + t.Sel.Name
 	case *ast.ArrayType:
-		return "[]" + formatType(t.Elt) // handle array type
+		return "[]" + formatType(t.Elt)
 	case *ast.MapType:
-		return "map[" + formatType(t.Key) + "]" + formatType(t.Value) // handle map type
+		return "map[" + formatType(t.Key) + "]" + formatType(t.Value)
 	case *ast.StarExpr:
-		return "*" + formatType(t.X) // handle pointer type
+		return "*" + formatType(t.X)
 	case *ast.FuncType:
-		return "func" + formatFuncType(t) // handle function type
+		return "func" + formatFuncType(t)
 	case *ast.ChanType:
-		return "chan " + formatType(t.Value) // handle channel type
+		return "chan " + formatType(t.Value)
 	case *ast.InterfaceType:
-		return "interface{}" // handle empty interfaces
+		return "interface{}"
 	default:
-		// Check for specific string representations for complex types
 		if strType, ok := expr.(*ast.Ident); ok && strType.Name == "interface" {
 			return "interface{}"
 		}
 		if strType, ok := expr.(*ast.MapType); ok {
-			return "map[" + formatType(strType.Key) + "]" + formatType(strType.Value) // re-ensure handling of map type
+			return "map[" + formatType(strType.Key) + "]" + formatType(strType.Value)
 		}
 		if strType, ok := expr.(*ast.ArrayType); ok {
-			return "[]" + formatType(strType.Elt) // re-ensure handling of array type
+			return "[]" + formatType(strType.Elt)
 		}
-		return "<unknown type>" // Provide a fallback for unknown types
+		return "<unknown type>"
 	}
 }
 
